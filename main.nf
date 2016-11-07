@@ -189,8 +189,8 @@ process trim_galore {
 process star {
     tag "$reads"
 
-    cpus 10
-    memory '80GB'
+    cpus 6
+    memory '12GB'
     time  { 5.h * task.attempt }
     publishDir "${params.outdir}/STAR", mode: 'copy'
 
@@ -251,7 +251,7 @@ aligned
 process rseqc {
     tag "$bam_rseqc"
 
-    memory { 32.GB * task.attempt }
+    memory { 12.GB * task.attempt }
     time  { 7.h * task.attempt }
 
     publishDir "${params.outdir}/rseqc" , mode: 'copy'
@@ -329,7 +329,7 @@ process preseq {
 process markDuplicates {
     tag "$bam_markduplicates"
 
-    memory { 16.GB * task.attempt }
+    memory { 12.GB * task.attempt }
     time { 2.h * task.attempt }
 
     publishDir "${params.outdir}/markDuplicates", mode: 'copy'
@@ -364,7 +364,7 @@ process markDuplicates {
 process dupradar {
     tag "$bam_md"
 
-    memory { 16.GB * task.attempt }
+    memory { 12.GB * task.attempt }
     time { 2.h * task.attempt }
 
     publishDir "${params.outdir}/dupradar", pattern: '*.{pdf,txt}', mode: 'copy'
@@ -525,7 +525,7 @@ bam_count.count().subscribe{ num_bams = it }
  */
 process sample_correlation {
 
-    memory { 16.GB * task.attempt }
+    memory { 12.GB * task.attempt }
     time { 2.h * task.attempt }
 
     publishDir "${params.outdir}/sample_correlation", mode: 'copy'
