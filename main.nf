@@ -3,14 +3,16 @@
 vim: syntax=groovy
 -*- mode: groovy;-*-
 ========================================================================================
-                R N A - S E Q    T W O    P O I N T    Z E R O
+               N G I - R N A S E Q    B E S T    P R A C T I C E
 ========================================================================================
  New RNA-Seq Best Practice Analysis Pipeline. Started March 2016.
  #### Homepage / Documentation
  https://github.com/SciLifeLab/NGI-RNAseq
  #### Authors
- Phil Ewels <phil.ewels@scilifelab.se>
- Rickard Hammarén <rickard.hammaren@scilifelab.se>
+ Phil Ewels @ewels <phil.ewels@scilifelab.se>
+ Rickard Hammarén @Hammarn  <rickard.hammaren@scilifelab.se>
+ Docker and AWS integration by 
+ Denis Moreno @Galithil <denis.moreno@scilifelab.se> 
 ----------------------------------------------------------------------------------------
 */
 
@@ -20,11 +22,13 @@ vim: syntax=groovy
  */
 
 // Pipeline version
-version = 0.2
+version = 1.0
 
 // Configurable variables
 params.project = false
 params.genome = false
+params.forward_stranded = false
+params.reverse_stranded = false
 params.star_index = params.genome ? params.genomes[ params.genome ].star ?: false : false
 params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
 params.gtf = params.genome ? params.genomes[ params.genome ].gtf ?: false : false
@@ -45,6 +49,7 @@ if (params.rlocation){
     nxtflow_libs = file(params.rlocation)
     nxtflow_libs.mkdirs()
 }
+
 
 def single
 params.sampleLevel = false
@@ -296,8 +301,14 @@ if(params.aligner == 'hisat2' && !params.hisat2_index && !params.download_hisat2
         file "${fasta.baseName}.*.ht2" into hs2_indices
 
         script:
-        log.info "[HISAT2 index build] Available memory: ${task.memory}"
-        if( task.memory.toGiga() > params.hisatBuildMemory ){
+        if( task.memory == null ){
+            log.info "[HISAT2 index build] Available memory not known - defaulting to 0. Specify process memory requirements to change this."
+            avail_mem = 0
+        } else {
+            log.info "[HISAT2 index build] Available memory: ${task.memory}"
+            avail_mem = task.memory.toGiga()
+        }
+        if( avail_mem > params.hisatBuildMemory ){
             log.info "[HISAT2 index build] Over ${params.hisatBuildMemory} GB available, so using splice sites and exons in HISAT2 index"
             extract_exons = "hisat2_extract_exons.py $gtf > ${gtf.baseName}.hisat2_exons.txt"
             ss = "--ss $indexing_splicesites"
@@ -517,17 +528,15 @@ if(params.aligner == 'hisat2'){
         file "${hisat2_bam.baseName}.sorted.bam" into bam_count, bam_rseqc, bam_preseq, bam_markduplicates, bam_featurecounts, bam_stringtieFPKM
 
         script:
+        def avail_mem = task.memory == null ? '' : "-m ${task.memory.toBytes() / task.cpus}"
         """
         samtools sort \\
             $hisat2_bam \\
-            -m ${task.memory.toBytes() / task.cpus} \\
-            -@ ${task.cpus} \\
+            -@ ${task.cpus} $avail_mem \\
             -o ${hisat2_bam.baseName}.sorted.bam
         """
     }
 }
-
-
 
 
 /*
@@ -572,11 +581,16 @@ process rseqc {
     file "*.{txt,pdf,r,xls}" into rseqc_results
 
     script:
-    def strandRule = params.strandRule ?: (single ? '++,--' : '1+-,1-+,2++,2--')
-    """
+    def strandRule = ''
+    if (params.forward_stranded){
+        strandRule = params.strandRule ?:  (single ? '-d +-,-+' : '-d 1+-,1-+,2++,2–')
+    } else if (params.reverse_stranded){
+        strandRule = params.strandRule ?: (single ? '-d ++,--' : '-d 1+-,1-+,2++,2--')
+    }
+     """
     samtools index $bam_rseqc
     infer_experiment.py -i $bam_rseqc -r $bed12 > ${bam_rseqc.baseName}.infer_experiment.txt
-    RPKM_saturation.py -i $bam_rseqc -r $bed12 -d $strandRule -o ${bam_rseqc.baseName}.RPKM_saturation
+    RPKM_saturation.py -i $bam_rseqc -r $bed12  $strandRule -o ${bam_rseqc.baseName}.RPKM_saturation
     junction_annotation.py -i $bam_rseqc -o ${bam_rseqc.baseName}.rseqc -r $bed12
     bam_stat.py -i $bam_rseqc 2> ${bam_rseqc.baseName}.bam_stat.txt
     junction_saturation.py -i $bam_rseqc -o ${bam_rseqc.baseName}.rseqc -r $bed12 2> ${bam_rseqc.baseName}.junction_annotation_log.txt
@@ -587,7 +601,6 @@ process rseqc {
     echo "Filename $bam_rseqc RseQC version: "\$(read_duplication.py --version)
     """
 }
-
 
 
 /*
@@ -627,8 +640,14 @@ process markDuplicates {
     file "${bam_markduplicates.baseName}.markDups_metrics.txt" into picard_results
 
     script:
+    if( task.memory == null ){
+        log.info "[Picard MarkDuplicates] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this."
+        avail_mem = 3
+    } else {
+        avail_mem = task.memory.toGiga()
+    }
     """
-    java -Xmx2g -jar \$PICARD_HOME/picard.jar MarkDuplicates \\
+    java -Xmx${avail_mem}g -jar \$PICARD_HOME/picard.jar MarkDuplicates \\
         INPUT=$bam_markduplicates \\
         OUTPUT=${bam_markduplicates.baseName}.markDups.bam \\
         METRICS_FILE=${bam_markduplicates.baseName}.markDups_metrics.txt \\
@@ -698,13 +717,18 @@ process featureCounts {
     file "${bam_featurecounts.baseName}_biotype_counts.txt" into featureCounts_biotype
 
     script:
+    def featureCounts_direction = 0
+    if (params.reverse_stranded){
+        featureCounts_direction = 2
+    } else if (params.forward_stranded) {
+        featureCounts_direction = 1
+    }
     """
-    featureCounts -a $gtf -g gene_id -o ${bam_featurecounts.baseName}_gene.featureCounts.txt -p -s 2 $bam_featurecounts
-    featureCounts -a $gtf -g gene_biotype -o ${bam_featurecounts.baseName}_biotype.featureCounts.txt -p -s 2 $bam_featurecounts
+    featureCounts -a $gtf -g gene_id -o ${bam_featurecounts.baseName}_gene.featureCounts.txt -p -s $featureCounts_direction $bam_featurecounts  
+    featureCounts -a $gtf -g gene_biotype -o ${bam_featurecounts.baseName}_biotype.featureCounts.txt -p -s $featureCounts_direction $bam_featurecounts
     cut -f 1,7 ${bam_featurecounts.baseName}_biotype.featureCounts.txt > ${bam_featurecounts.baseName}_biotype_counts.txt
     """
 }
-
 
 
 /*
@@ -750,8 +774,15 @@ process stringtieFPKM {
     stdout into stringtie_log
 
     script:
+    def StringTie_direction = ''
+    if (params.forward_stranded){
+        StringTie_direction = "--fr"
+    } else if (!params.reverse_stranded){
+        StringTie_direction = "--rf"
+    }
     """
     stringtie $bam_stringtieFPKM \\
+        $StringTie_direction \\
         -o ${bam_stringtieFPKM.baseName}_transcripts.gtf \\
         -v \\
         -G $gtf \\
@@ -765,7 +796,6 @@ process stringtieFPKM {
 }
 def num_bams
 bam_count.count().subscribe{ num_bams = it }
-
 
 
 /*
@@ -825,6 +855,7 @@ process multiqc {
     multiqc -f . 2>&1
     """
 }
+
 
 /*
  * STEP 13 - Output Description HTML
