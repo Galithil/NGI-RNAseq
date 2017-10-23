@@ -1,10 +1,17 @@
 # NGI-RNAseq Usage
 
+## General Nextflow info
+Nextflow handles job submissions on SLURM or other enviroments, and supervises running the jobs. Thus the Nextflow proccess must run until the pipeline is finished. We recommend that you put the process running in the background through `screen`/`tmux` or similar tool. Alternatively submitted as it's own job through your job scheduler. 
+
+It is recomnded to limit the Nexflow Java virtual machines memory. We recommend adding the following line to your enviroment (`~/.bashrc` or `~./bash_profile`):
+
+```
+ NXF_OPTS='-Xms1g -Xmx4g'
+``` 
 ## Running the pipeline
 The typical command for running the pipeline is as follows:
-
 ```bash
-nextflow run SciLifeLab/NGI-RNAseq --reads '*_R{1,2}.fastq.gz'
+nextflow run SciLifeLab/NGI-RNAseq --reads '*_R{1,2}.fastq.gz' --genome GRCh37
 ```
 
 Note that the pipeline will create files in your working directory:
@@ -23,12 +30,43 @@ Location of the input FastQ files:
  --reads 'path/to/data/sample_*_{1,2}.fastq'
 ```
 
-**NB: Must be enclosed in quotes!**
+Please note the following requirements:
 
-Note that the `{1,2}` parentheses are required to specify paired end data. Running `--reads '*.fastq'` will treat
-all files as single end. The file path should be in quotation marks to prevent shell glob expansion.
+1. The path must be enclosed in quotes
+2. The path must have at least one `*` wildcard character
+3. When using the pipeline with paired end data, the path must use `{1,2}` notation to specify read pairs.
 
-If left unspecified, the pipeline will assume that the data is in a directory called `data` in the working directory.
+If left unspecified, the pipeline will assume that the data is in a directory called `data` in the
+working directory (`data/*{1,2}.fastq.gz`).
+
+### `--singleEnd`
+By default, the pipeline expects paired-end data. If you have single-end data, specify `--singleEnd`
+on the command line when you launch the pipeline. A normal glob pattern, enclosed in quotation marks,
+can then be used for `--reads`. For example: `--singleEnd --reads '*.fastq'`
+
+It is not possible to run a mixture of single-end and paired-end files in one run.
+
+### Library strandedness
+Three command line flags / config parameters set the library strandedness for a run:
+
+* `--forward_stranded`
+* `--reverse_stranded`
+* `--unstranded`
+
+If not set, the pipeline will be run as unstranded. The UPPMAX configuration file sets `reverse_stranded` to true by default. Use `--unstranded` or `--forward_stranded` to overwrite this. Specifying `--pico` makes the pipeline run in `forward_stranded` mode.
+
+These flags affect the commands used for several steps in the pipeline - namely HISAT2, featureCounts, RSeQC (`RPKM_saturation.py`)
+and StringTie:
+* `--forward_stranded`
+  * HISAT2: `--rna-strandness F` / `--rna-strandness FR`
+  * featureCounts: `-s 1`
+  * RSeQC: `-d ++,--` / `-d 1++,1--,2+-,2-+`
+  * StringTie: `--fr`
+* `--reverse_stranded`
+  * HISAT2: `--rna-strandness R` / `--rna-strandness RF`
+  * featureCounts: `-s 2`
+  * RSeQC: `-d +-,-+` / `-d 1+-,1-+,2++,2--`
+  * StringTie: `--rf`
 
 ## Alignment tool
 By default, the pipeline uses [STAR](https://github.com/alexdobin/STAR) to align the raw FastQ reads
@@ -100,106 +138,104 @@ and BED12 files will then be generated from these downloaded files.
 Supply this parameter to save any generated reference genome files to your results folder.
 These can then be used for future pipeline runs, reducing processing times.
 
+### `--saveTrimmed`
+By default, trimmed FastQ files will not be saved to the results directory. Specify this
+flag (or set to true in your config file) to copy these files when complete.
+
+### `--saveAlignedIntermediates`
+As above, by default intermediate BAM files will not be saved. The final BAM files created
+after the Picard MarkDuplicates step are always saved. Set to true to also copy out BAM
+files from STAR / HISAT2 and sorting steps.
+
 ## Adapter Trimming
 If specific additional trimming is required (for example, from additional tags),
 you can use any of the following command line parameters. These affect the command
 used to launch TrimGalore!
 
-* `--clip_r1 [int]`
-  * Instructs Trim Galore to remove bp from the 5' end of read 1 (or single-end reads).
-* `--clip_r2 [int]`
-  * Instructs Trim Galore to remove bp from the 5' end of read 2 (paired-end reads only).
-* `--three_prime_clip_r1 [int]`
-  * Instructs Trim Galore to remove bp from the 3' end of read 1 _AFTER_ adapter/quality trimming has been performed.
-* `--three_prime_clip_r2 [int]`
-  * Instructs Trim Galore to re move bp from the 3' end of read 2 _AFTER_ adapter/quality trimming has been performed.
+### `--clip_r1 [int]`
+Instructs Trim Galore to remove bp from the 5' end of read 1 (or single-end reads).
 
-### Trimming Presets
-Some command line options are available to automatically set these trimming parameters
-for common RNA-seq library preparation kits.
+### `--clip_r2 [int]`
+Instructs Trim Galore to remove bp from the 5' end of read 2 (paired-end reads only).
 
-| Parameter | Kit                                             | 5' R1 | 5' R2 | 3' R1 | 3' R2 |
-|-----------|-------------------------------------------------|-------|-------|-------|-------|
-| `--pico`  | SMARTer Stranded Total RNA-Seq Kit - Pico Input | 3     | 0     | 0     | 3     |
+### `--three_prime_clip_r1 [int]`
+Instructs Trim Galore to remove bp from the 3' end of read 1 _AFTER_ adapter/quality trimming has been performed.
+
+### `--three_prime_clip_r2 [int]`
+Instructs Trim Galore to re move bp from the 3' end of read 2 _AFTER_ adapter/quality trimming has been performed.
 
 
-### strand direction for StringTie and feturecounts
-The strandedness of the library can be set py using the `--forward_stranded`  and `--reverse_stranded` flags. Both are set as 
-`false` by default but reversed is set to true in the Uppmax config file. If you library instead is forward oriented simply specify the`--forward_stranded` flag. 
- 
-e.g.
-```groovy
-`--forward_stranded` 
-```
+## Library Prep Presets
+Some command line options are available to automatically set parameters for common RNA-seq library preparation kits.
+
+> Note that these presets override other command line arguments. So if you specify `--pico --clip_r1 0`, the `--clip_r1` bit will be ignored.
+
+If you have a kit that you'd like a preset added for, please let us know!
+
+### `--pico`
+Sets trimming and standedness settings for the _SMARTer Stranded Total RNA-Seq Kit - Pico Input_ kit.
+
+Equivalent to: `--forward_stranded` `--clip_r1 3` `--three_prime_clip_r2 3`
 
 
 ## Job Resources
 ### Automatic resubmission
-Each step in the pipeline has a default set of requirements for number of CPUs,
-memory and time. For most of the steps in the pipeline, if the job exits
-on UPPMAX with an error code of `143` (exceeded requested resources) it will
-automatically resubmit with higher requests (2 x original, then 3 x original).
-If it still fails after three times then the pipeline is stopped.
+Each step in the pipeline has a default set of requirements for number of CPUs, memory and time. For most of the steps in the pipeline, if the job exits on UPPMAX with an error code of `143` (exceeded requested resources) it will automatically resubmit with higher requests (2 x original, then 3 x original). If it still fails after three times then the pipeline is stopped.
 
 ### Custom resource requests
-Wherever process-specific requirements are set in the pipeline, the default
-value can be overwritten with config variables. These can be set on the command
-line or in a config file. The names are set as `[process name]_[resource type]`,
-for example `star_memory`.
-
-So, to override the defaults for STAR, you can do run the pipeline as follows:
-
-```bash
-nextflow run SciLifeLab/NGI-RNAseq --star_cpus 1 --star_memory '10 GB' --star_time '24h'
-```
-
-Alternative, these can be set in a config file:
-
-```groovy
-params {
-  star_cpus = 1
-  star_memory = '10 GB'
-  star_time = '24h'
-}
-```
+Wherever process-specific requirements are set in the pipeline, the default value can be changed by creating a custom config file. See the files in [`conf`](../conf) for examples.
 
 ## Other command line parameters
 ### `--outdir`
 The output directory where the results will be saved.
 
+### `--email`
+Set this parameter to your e-mail address to get a summary e-mail with details of the run sent to you when the workflow exits. If set in your user config file (`~/.nextflow/config`) then you don't need to speicfy this on the command line for every run.
+
+### `--plaintext_email`
+Set to receive plain-text e-mails instead of HTML formatted.
+
 ### `--sampleLevel`
 Used to turn of the edgeR MDS and heatmap. Set automatically when running on fewer than 3 samples.
 
-### `--strandRule`
-Some RSeQC jobs need to know the stranded nature of the library. By default, the pipeline will use
-`++,--` for single end libraries and `1+-,1-+,2++,2--` for paired end libraries. These codes are for
-strand specific libraries (antisense). `1+-,1-+,2++,2--` decodes as:
+### `-name`
+Name for the pipeline run. If not specified, Nextflow will automatically generate a random mnemonic.
 
-*  Reads 1 mapped to `+` => parental gene on `+`
-*  Reads 1 mapped to `-` => parental gene on `-`
-*  Reads 2 mapped to `+` => parental gene on `-`
-*  Reads 2 mapped to `-` => parental gene on `+`
+This is used in the MultiQC report (if not default) and in the summary HTML / e-mail (always).
 
-Use this parameter to override these defaults. For example, if your data is paired end and strand specific,
-but same-sense to the reference, you could run:
+**NB:** Single hyphen (core Nextflow option)
 
-```bash
-nextflow run NGI-RNAseq/main.nf --strandRule '1++,1--,2+-,2-+'
+### `-resume`
+Specify this when restarting a pipeline. Nextflow will used cached results from any pipeline steps where the inputs are the same, continuing from where it got to previously.
+
+You can also supply a run name to resume a specific run: `-resume [run-name]`. Use the `nextflow log` command to show previous run names.
+
+**NB:** Single hyphen (core Nextflow option)
+
+### `-c`
+Specify the path to a specific config file (this is a core NextFlow command). Useful if using different UPPMAX
+projects or different sets of reference genomes.
+
+**NB:** Single hyphen (core Nextflow option)
+
+Note - you can use this to override defaults. For example, we run on UPPMAX but don't want to use the MultiQC
+environment module as is the default. So we specify a config file using `-c` that contains the following:
+
+```groovy
+process.$multiqc.module = []
 ```
-Use `--strandRule 'none'` if your data is not strand specific.
 
 ### `--rlocation`
 Some steps in the pipeline run R with required modules. By default, the pipeline will install
 these modules to `~/R/nxtflow_libs/` if not present. You can specify what path to use with this
 command line flag.
 
+### `--multiqc_config`
+If you would like to supply a custom config file to MultiQC, you can specify a path with `--multiqc_config`. This is used instead of the config file specific to the pipeline.
+
 ### `--clusterOptions`
 Submit arbitrary SLURM options (UPPMAX profile only). For instance, you could use `--clusterOptions '-p devcore'`
 to run on the development node (though won't work with default process time requests).
-
-### `-c`
-Specify the path to a specific config file (this is a core NextFlow command). Useful if using different UPPMAX
-projects or different sets of reference genomes. **NB:** one hyphen only (core Nextflow parameter).
 
 ## Stand-alone scripts
 The `bin` directory contains some scripts used by the pipeline which may also be run manually:
